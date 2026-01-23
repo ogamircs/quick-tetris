@@ -59,6 +59,7 @@ SOFT_DROP_SPEED = 50       # Fast drop speed
 LOCK_DELAY = 500           # Time before piece locks after landing
 DAS_DELAY = 170            # Delayed Auto Shift initial delay
 DAS_REPEAT = 50            # DAS repeat rate
+HARD_DROP_ANIM_SPEED = 15  # Milliseconds per row during hard drop animation
 
 # Scoring
 SCORE_SINGLE = 100
@@ -316,6 +317,12 @@ class TetrisGame:
         self.game_over = False
         self.paused = False
 
+        # Hard drop animation
+        self.hard_drop_animating = False
+        self.hard_drop_target_y = 0
+        self.hard_drop_anim_time = 0
+        self.hard_drop_score_pending = 0
+
     def get_next_piece(self):
         """Get next piece using 7-bag randomizer."""
         if not self.bag:
@@ -396,18 +403,23 @@ class TetrisGame:
         return False
 
     def hard_drop(self):
-        """Instantly drop piece to bottom."""
-        if self.current_piece is None:
+        """Start hard drop animation."""
+        if self.current_piece is None or self.hard_drop_animating:
             return
 
-        drop_distance = 0
-        while self.board.is_valid_position(self.current_piece,
-                                           y=self.current_piece.y + 1):
-            self.current_piece.y += 1
-            drop_distance += 1
+        # Calculate target position and score
+        target_y = self.board.get_ghost_position(self.current_piece)
+        drop_distance = target_y - self.current_piece.y
 
-        self.score += drop_distance * HARD_DROP_SCORE
-        self.lock_piece()
+        if drop_distance > 0:
+            # Start animation
+            self.hard_drop_animating = True
+            self.hard_drop_target_y = target_y
+            self.hard_drop_anim_time = 0
+            self.hard_drop_score_pending = drop_distance * HARD_DROP_SCORE
+        else:
+            # Already at bottom, just lock
+            self.lock_piece()
 
     def hold_piece(self):
         """Hold current piece."""
@@ -485,6 +497,23 @@ class TetrisGame:
         if self.game_over or self.paused or self.current_piece is None:
             return
 
+        # Hard drop animation
+        if self.hard_drop_animating:
+            self.hard_drop_anim_time += dt
+            # Move piece down one row per HARD_DROP_ANIM_SPEED ms
+            while self.hard_drop_anim_time >= HARD_DROP_ANIM_SPEED:
+                self.hard_drop_anim_time -= HARD_DROP_ANIM_SPEED
+                if self.current_piece.y < self.hard_drop_target_y:
+                    self.current_piece.y += 1
+                else:
+                    # Animation complete
+                    self.hard_drop_animating = False
+                    self.score += self.hard_drop_score_pending
+                    self.hard_drop_score_pending = 0
+                    self.lock_piece()
+                    break
+            return  # Don't process normal gravity during animation
+
         # Gravity
         self.fall_time += dt
         fall_speed = self.get_fall_speed()
@@ -503,6 +532,10 @@ class TetrisGame:
 
     def handle_input(self, dt):
         """Handle keyboard input."""
+        # Block input during hard drop animation
+        if self.hard_drop_animating:
+            return
+
         keys = pygame.key.get_pressed()
 
         # DAS (Delayed Auto Shift) for horizontal movement
@@ -559,7 +592,7 @@ class TetrisGame:
                     self.reset_game()
                 return
 
-            if self.paused:
+            if self.paused or self.hard_drop_animating:
                 return
 
             if event.key == pygame.K_UP or event.key == pygame.K_x:
