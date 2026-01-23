@@ -60,6 +60,7 @@ LOCK_DELAY = 500           # Time before piece locks after landing
 DAS_DELAY = 170            # Delayed Auto Shift initial delay
 DAS_REPEAT = 50            # DAS repeat rate
 HARD_DROP_ANIM_SPEED = 15  # Milliseconds per row during hard drop animation
+LINE_CLEAR_ANIM_DURATION = 300  # Total duration of line clear animation in ms
 
 # Scoring
 SCORE_SINGLE = 100
@@ -239,20 +240,26 @@ class Board:
             if 0 <= by < BOARD_HEIGHT + HIDDEN_ROWS:
                 self.grid[by][bx] = piece.color
 
-    def clear_lines(self):
-        """Clear completed lines and return number cleared."""
-        lines_cleared = 0
-        y = BOARD_HEIGHT + HIDDEN_ROWS - 1
-
-        while y >= 0:
+    def find_complete_lines(self):
+        """Find all completed lines and return their y positions."""
+        complete = []
+        for y in range(BOARD_HEIGHT + HIDDEN_ROWS):
             if all(cell is not None for cell in self.grid[y]):
-                # Remove the line
-                del self.grid[y]
-                # Add empty line at top
-                self.grid.insert(0, [None for _ in range(BOARD_WIDTH)])
-                lines_cleared += 1
-            else:
-                y -= 1
+                complete.append(y)
+        return complete
+
+    def clear_lines(self, lines_to_clear=None):
+        """Clear completed lines and return number cleared."""
+        if lines_to_clear is None:
+            # Find lines automatically (legacy behavior)
+            lines_to_clear = self.find_complete_lines()
+
+        lines_cleared = len(lines_to_clear)
+
+        # Remove lines from bottom to top to maintain correct indices
+        for y in sorted(lines_to_clear, reverse=True):
+            del self.grid[y]
+            self.grid.insert(0, [None for _ in range(BOARD_WIDTH)])
 
         return lines_cleared
 
@@ -322,6 +329,11 @@ class TetrisGame:
         self.hard_drop_target_y = 0
         self.hard_drop_anim_time = 0
         self.hard_drop_score_pending = 0
+
+        # Line clear animation
+        self.line_clear_animating = False
+        self.clearing_lines = []  # List of y positions being cleared
+        self.line_clear_anim_time = 0
 
     def get_next_piece(self):
         """Get next piece using 7-bag randomizer."""
@@ -459,15 +471,28 @@ class TetrisGame:
 
         self.board.lock_piece(self.current_piece)
 
-        # Clear lines
-        lines = self.board.clear_lines()
-        if lines > 0:
-            self.lines_cleared += lines
+        # Check for completed lines
+        complete_lines = self.board.find_complete_lines()
+        if complete_lines:
+            # Start line clear animation
+            self.line_clear_animating = True
+            self.clearing_lines = complete_lines
+            self.line_clear_anim_time = 0
+            self.current_piece = None  # Hide current piece during animation
+            return  # Don't spawn next piece yet
+
+        # No lines to clear, proceed normally
+        self.finish_lock_piece(0)
+
+    def finish_lock_piece(self, lines_cleared):
+        """Complete the lock piece process after line clear animation."""
+        if lines_cleared > 0:
+            self.lines_cleared += lines_cleared
             self.combo += 1
             # Scoring
             base_scores = {1: SCORE_SINGLE, 2: SCORE_DOUBLE,
                          3: SCORE_TRIPLE, 4: SCORE_TETRIS}
-            self.score += base_scores.get(lines, 0) * self.level
+            self.score += base_scores.get(lines_cleared, 0) * self.level
             # Combo bonus
             if self.combo > 1:
                 self.score += 50 * self.combo * self.level
@@ -494,7 +519,22 @@ class TetrisGame:
 
     def update(self, dt):
         """Update game state."""
-        if self.game_over or self.paused or self.current_piece is None:
+        if self.game_over or self.paused:
+            return
+
+        # Line clear animation
+        if self.line_clear_animating:
+            self.line_clear_anim_time += dt
+            if self.line_clear_anim_time >= LINE_CLEAR_ANIM_DURATION:
+                # Animation complete, actually clear the lines
+                lines_count = len(self.clearing_lines)
+                self.board.clear_lines(self.clearing_lines)
+                self.line_clear_animating = False
+                self.clearing_lines = []
+                self.finish_lock_piece(lines_count)
+            return  # Don't process other updates during animation
+
+        if self.current_piece is None:
             return
 
         # Hard drop animation
@@ -532,8 +572,8 @@ class TetrisGame:
 
     def handle_input(self, dt):
         """Handle keyboard input."""
-        # Block input during hard drop animation
-        if self.hard_drop_animating:
+        # Block input during animations
+        if self.hard_drop_animating or self.line_clear_animating:
             return
 
         keys = pygame.key.get_pressed()
@@ -592,7 +632,7 @@ class TetrisGame:
                     self.reset_game()
                 return
 
-            if self.paused or self.hard_drop_animating:
+            if self.paused or self.hard_drop_animating or self.line_clear_animating:
                 return
 
             if event.key == pygame.K_UP or event.key == pygame.K_x:
@@ -634,6 +674,46 @@ class TetrisGame:
                         (px + 2, py + CELL_SIZE - 2),
                         (px + CELL_SIZE - 2, py + CELL_SIZE - 2), 2)
 
+    def draw_block_animated(self, x, y, color, scale=1.0, flash=0.0):
+        """Draw a block with animation effects (scale and flash)."""
+        px = x * CELL_SIZE
+        py = y * CELL_SIZE
+
+        # Calculate scaled size and offset
+        scaled_size = int(CELL_SIZE * scale)
+        offset = (CELL_SIZE - scaled_size) // 2
+
+        if scaled_size <= 0:
+            return
+
+        # Apply flash (blend towards white)
+        if flash > 0:
+            color = tuple(int(c + (255 - c) * flash) for c in color)
+
+        # Main block
+        pygame.draw.rect(self.screen, color,
+                        (px + offset + 1, py + offset + 1,
+                         scaled_size - 2, scaled_size - 2))
+
+        if scale > 0.5:  # Only draw highlights if block is big enough
+            # Highlight (top-left)
+            highlight = tuple(min(255, c + 50) for c in color)
+            pygame.draw.line(self.screen, highlight,
+                           (px + offset + 1, py + offset + 1),
+                           (px + offset + scaled_size - 2, py + offset + 1), 2)
+            pygame.draw.line(self.screen, highlight,
+                           (px + offset + 1, py + offset + 1),
+                           (px + offset + 1, py + offset + scaled_size - 2), 2)
+
+            # Shadow (bottom-right)
+            shadow = tuple(max(0, c - 50) for c in color)
+            pygame.draw.line(self.screen, shadow,
+                           (px + offset + scaled_size - 2, py + offset + 2),
+                           (px + offset + scaled_size - 2, py + offset + scaled_size - 2), 2)
+            pygame.draw.line(self.screen, shadow,
+                           (px + offset + 2, py + offset + scaled_size - 2),
+                           (px + offset + scaled_size - 2, py + offset + scaled_size - 2), 2)
+
     def draw_board(self):
         """Draw the game board."""
         # Board background
@@ -650,11 +730,35 @@ class TetrisGame:
                            (0, y * CELL_SIZE),
                            (BOARD_PIXEL_WIDTH, y * CELL_SIZE))
 
+        # Calculate animation parameters for clearing lines
+        clear_scale = 1.0
+        clear_flash = 0.0
+        if self.line_clear_animating:
+            progress = self.line_clear_anim_time / LINE_CLEAR_ANIM_DURATION
+            # First 30%: flash white
+            if progress < 0.3:
+                clear_flash = progress / 0.3
+            # 30-50%: hold flash
+            elif progress < 0.5:
+                clear_flash = 1.0
+            # 50-100%: shrink and fade
+            else:
+                shrink_progress = (progress - 0.5) / 0.5
+                clear_scale = 1.0 - shrink_progress
+                clear_flash = 1.0 - shrink_progress
+
         # Placed blocks
         for y in range(HIDDEN_ROWS, BOARD_HEIGHT + HIDDEN_ROWS):
             for x in range(BOARD_WIDTH):
                 if self.board.grid[y][x] is not None:
-                    self.draw_block(x, y - HIDDEN_ROWS, self.board.grid[y][x])
+                    # Check if this row is being cleared
+                    if y in self.clearing_lines:
+                        self.draw_block_animated(x, y - HIDDEN_ROWS,
+                                                self.board.grid[y][x],
+                                                scale=clear_scale,
+                                                flash=clear_flash)
+                    else:
+                        self.draw_block(x, y - HIDDEN_ROWS, self.board.grid[y][x])
 
         # Ghost piece
         if self.current_piece and not self.game_over:
