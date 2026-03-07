@@ -31,7 +31,7 @@ cd quick-tetris
 
 # Create virtual environment and install dependencies
 uv venv .venv --python 3.12
-uv pip install pygame
+uv pip install pygame pytest
 ```
 
 ### Setup with pip
@@ -50,7 +50,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install pygame
+pip install pygame pytest
 ```
 
 ## Running the Game
@@ -107,9 +107,39 @@ Holding left/right has an initial delay (170ms) before auto-repeat kicks in (50m
 
 ```
 quick-tetris/
-├── tetris.py      # Main game file (all code in one file)
-├── README.md      # This file
-└── .gitignore     # Git ignore rules
+├── tetris.py           # Entry point
+├── src/
+│   ├── __init__.py     # Package init
+│   ├── constants.py    # Game constants, colors, tetromino shapes
+│   ├── music.py        # Procedural music generation
+│   ├── tetromino.py    # Tetromino piece class
+│   ├── board.py        # Game board/grid management
+│   └── game.py         # Main game class
+├── tests/
+│   ├── __init__.py
+│   ├── test_tetromino.py
+│   ├── test_board.py
+│   ├── test_constants.py
+│   └── test_music.py
+├── README.md
+└── .gitignore
+```
+
+## Testing
+
+Run all tests:
+```bash
+python -m pytest tests/ -v
+```
+
+Run specific test file:
+```bash
+python -m pytest tests/test_board.py -v
+```
+
+Run tests with coverage (requires pytest-cov):
+```bash
+python -m pytest tests/ --cov=src --cov-report=term-missing
 ```
 
 ## License
